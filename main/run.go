@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
@@ -19,11 +20,12 @@ import (
 	clog "github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/platform"
 	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/infra/conf/serial"
 	"github.com/xtls/xray-core/main/commands/base"
 )
 
 var cmdRun = &base.Command{
-	UsageLine: "{{.Exec}} run [-c config.json] [-confdir dir]",
+	UsageLine: "{{.Exec}} run [-c config.json] [-confdir dir] [--set path=value]",
 	Short:     "Run Xray with config, the default command",
 	Long: `
 Run Xray with config, the default command.
@@ -35,6 +37,15 @@ The -confdir=dir flag sets a dir with multiple json config
 
 The -format=json flag sets the format of config files.
 Default "auto".
+
+The --set path=value flag overrides a config field after merging files.
+Repeat it to set multiple fields; later values take precedence.
+Paths use dots and zero-based array indices, for example inbounds[0].port=1080.
+Array indices may replace existing elements or append at the current length.
+Values are JSON when valid, otherwise plain strings. Quote numeric strings as JSON.
+Without -c/-config or -confdir, --set starts with an empty config and skips
+default files, environment config paths and stdin. Protobuf overrides are unsupported.
+The -test and -dump flags use the final config, including all --set overrides.
 
 The config root env object sets process environment variables after all config
 files are parsed. Variables needed to locate or parse config files must be set
@@ -54,6 +65,7 @@ func init() {
 
 var (
 	configFiles cmdarg.Arg // "Config file for Xray.", the option is customed type, parse in main
+	configSets  cmdarg.Arg
 	configDir   string
 	dump        = cmdRun.Flag.Bool("dump", false, "Dump merged config only, without launching Xray server.")
 	test        = cmdRun.Flag.Bool("test", false, "Test config file only, without launching Xray server.")
@@ -65,6 +77,7 @@ var (
 	_ = func() bool {
 		cmdRun.Flag.Var(&configFiles, "config", "Config path for Xray.")
 		cmdRun.Flag.Var(&configFiles, "c", "Short alias of -config")
+		cmdRun.Flag.Var(&configSets, "set", "Set a config field (path=value); may be repeated.")
 		cmdRun.Flag.StringVar(&configDir, "confdir", "", "A dir with multiple json config")
 
 		return true
@@ -110,6 +123,15 @@ func executeRun(cmd *base.Command, args []string) {
 
 func dumpConfig() int {
 	files := getConfigFilePath(false)
+	if len(configSets) > 0 {
+		config, err := configWithOverrides(files)
+		if err != nil {
+			fmt.Println(err)
+			return 23
+		}
+		fmt.Println(string(config))
+		return 0
+	}
 	if config, err := core.GetMergedConfig(files); err != nil {
 		fmt.Println(err)
 		time.Sleep(1 * time.Second)
@@ -163,6 +185,9 @@ func readConfDir(dirPath string) {
 }
 
 func getConfigFilePath(verbose bool) cmdarg.Arg {
+	if len(configSets) > 0 && len(configFiles) == 0 && configDir == "" {
+		return nil
+	}
 	if dirExists(configDir) {
 		if verbose {
 			log.Println("Using confdir from arg:", configDir)
@@ -216,7 +241,7 @@ func getConfigFormat() string {
 func startXray() (core.Server, error) {
 	configFiles := getConfigFilePath(true)
 
-	c, err := core.LoadConfig(getConfigFormat(), configFiles)
+	c, err := loadRunConfig(configFiles)
 	if err != nil {
 		return nil, errors.New("failed to load config files: [", configFiles.String(), "]").Base(err)
 	}
@@ -227,4 +252,49 @@ func startXray() (core.Server, error) {
 	}
 
 	return server, nil
+}
+
+func loadRunConfig(files cmdarg.Arg) (*core.Config, error) {
+	if len(configSets) == 0 {
+		return core.LoadConfig(getConfigFormat(), files)
+	}
+	data, err := configWithOverrides(files)
+	if err != nil {
+		return nil, err
+	}
+	config, err := serial.DecodeJSONConfigStrict(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	return config.Build()
+}
+
+func configWithOverrides(files cmdarg.Arg) ([]byte, error) {
+	sources := make([]*core.ConfigSource, 0, len(files))
+	for _, file := range files {
+		f := getConfigFormat()
+		if f == "auto" {
+			f = core.GetFormat(file)
+			if file == "stdin:" {
+				f = "json"
+			}
+		}
+		switch f {
+		case "json", "yaml", "toml":
+		case "protobuf":
+			return nil, errors.New("--set does not support protobuf config files")
+		default:
+			return nil, errors.New("failed to get config format of ", file)
+		}
+		sources = append(sources, &core.ConfigSource{Name: file, Format: f})
+	}
+	base := []byte("{}")
+	if len(sources) > 0 {
+		var err error
+		base, err = serial.MergeConfigJSON(sources)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return applyConfigSets(base, configSets)
 }

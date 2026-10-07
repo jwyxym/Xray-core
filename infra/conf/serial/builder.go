@@ -2,6 +2,7 @@ package serial
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -20,6 +21,16 @@ import (
 // behavior for human-edited configs that may contain comments or other
 // JSON5/JSONC syntax.
 var UseStrictJSON = platform.NewEnvFlag(platform.UseStrictJSON).GetValue(func() string { return "" }) == "true"
+
+// MergeConfigJSON merges files into JSON suitable for further editing and decoding.
+// Unlike the diagnostic dumper, it honors custom JSON marshalers for config types.
+func MergeConfigJSON(files []*core.ConfigSource) ([]byte, error) {
+	c, err := mergeConfigs(files)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(c)
+}
 
 func MergeConfigFromFiles(files []*core.ConfigSource) (string, error) {
 	c, err := mergeConfigs(files)
