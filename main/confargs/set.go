@@ -1,4 +1,4 @@
-package main
+package confargs
 
 import (
 	"bytes"
@@ -100,7 +100,8 @@ func setConfigPath(node any, parts []configPathPart, value any) (any, error) {
 	return fields, nil
 }
 
-func applyConfigSets(base []byte, assignments []string) ([]byte, error) {
+// ApplySets applies ordered path=value assignments to a JSON configuration.
+func ApplySets(base []byte, assignments []string) ([]byte, error) {
 	var root map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(base))
 	decoder.UseNumber()

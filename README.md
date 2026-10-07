@@ -210,6 +210,10 @@ This distribution contains unmodified official precompiled and pre-signed Wintun
 
 ## One-line Compilation
 
+### Shared libraries (GitHub Actions)
+
+The **Build Shared Libraries** workflow builds Windows x64 DLL, Linux x64 SO, macOS ARM64 dylib, and Android SO artifacts for `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64`, each with a generated C header. Desktop jobs run Go tests and a C ABI smoke test; Android jobs cross-compile with NDK r28b (API 24), verify ELF architecture and exports, and check C linkage. The library exposes start/stop functions and supports `--set` arguments. See [the shared library guide](main/shared/README.md) for the API and download instructions.
+
 ### Windows (PowerShell)
 
 ```powershell

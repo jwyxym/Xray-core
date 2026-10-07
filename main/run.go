@@ -22,6 +22,7 @@ import (
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/infra/conf/serial"
 	"github.com/xtls/xray-core/main/commands/base"
+	"github.com/xtls/xray-core/main/confargs"
 )
 
 var cmdRun = &base.Command{
@@ -270,31 +271,5 @@ func loadRunConfig(files cmdarg.Arg) (*core.Config, error) {
 }
 
 func configWithOverrides(files cmdarg.Arg) ([]byte, error) {
-	sources := make([]*core.ConfigSource, 0, len(files))
-	for _, file := range files {
-		f := getConfigFormat()
-		if f == "auto" {
-			f = core.GetFormat(file)
-			if file == "stdin:" {
-				f = "json"
-			}
-		}
-		switch f {
-		case "json", "yaml", "toml":
-		case "protobuf":
-			return nil, errors.New("--set does not support protobuf config files")
-		default:
-			return nil, errors.New("failed to get config format of ", file)
-		}
-		sources = append(sources, &core.ConfigSource{Name: file, Format: f})
-	}
-	base := []byte("{}")
-	if len(sources) > 0 {
-		var err error
-		base, err = serial.MergeConfigJSON(sources)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return applyConfigSets(base, configSets)
+	return confargs.Merge(files, getConfigFormat(), configSets)
 }

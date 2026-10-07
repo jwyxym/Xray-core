@@ -1,4 +1,4 @@
-package main
+package confargs
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 
 func TestApplyConfigSets(t *testing.T) {
 	base := []byte(`{"inbounds":[{"port":80,"tag":"keep"}],"large":9007199254740993}`)
-	result, err := applyConfigSets(base, []string{
+	result, err := ApplySets(base, []string{
 		"inbounds[0].port=1080",
 		"inbounds[0].settings.udp=true",
 		"inbounds[1].protocol=socks",
@@ -63,7 +63,7 @@ func TestApplyConfigSetsErrors(t *testing.T) {
 		"inbounds[1].port=1", "log[0]=1", "scalar.child=1",
 	} {
 		t.Run(assignment, func(t *testing.T) {
-			_, err := applyConfigSets([]byte(`{"log":{},"scalar":1}`), []string{assignment})
+			_, err := ApplySets([]byte(`{"log":{},"scalar":1}`), []string{assignment})
 			if err == nil {
 				t.Fatal("expected invalid path or type error")
 			}
@@ -72,7 +72,7 @@ func TestApplyConfigSetsErrors(t *testing.T) {
 }
 
 func TestApplyConfigSetsFromEmpty(t *testing.T) {
-	result, err := applyConfigSets([]byte(`{}`), []string{
+	result, err := ApplySets([]byte(`{}`), []string{
 		"inbounds[0].protocol=socks", "inbounds[0].port=1080", "outbounds[0].protocol=freedom",
 	})
 	if err != nil || !json.Valid(result) {

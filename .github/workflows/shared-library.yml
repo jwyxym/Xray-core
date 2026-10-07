@@ -1,0 +1,217 @@
+name: Build Shared Libraries
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
+            cc: gcc
+            shell: 'msys2 {0}'
+            library: xray.dll
+            executable-suffix: .exe
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            cc: gcc
+            shell: bash
+            library: libxray.so
+            executable-suffix: ''
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+            cc: clang
+            shell: bash
+            library: libxray.dylib
+            executable-suffix: ''
+    env:
+      CGO_ENABLED: '1'
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      CC: ${{ matrix.cc }}
+      LIBRARY: ${{ matrix.library }}
+      EXE_SUFFIX: ${{ matrix.executable-suffix }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Windows C compiler
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          path-type: inherit
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Test shared config and lifecycle
+        run: go test -timeout 5m ./main ./main/confargs ./main/shared ./infra/conf/serial
+
+      - name: Build shared library and header
+        run: |
+          set -euo pipefail
+          mkdir -p build_assets/shared
+          go build -buildmode=c-shared -trimpath -buildvcs=false -o "build_assets/shared/$LIBRARY" ./main/shared
+          header="build_assets/shared/${LIBRARY%.*}.h"
+          if [ "$header" != 'build_assets/shared/xray.h' ]; then
+            mv "$header" build_assets/shared/xray.h
+          fi
+
+      - name: Compile and run C ABI smoke test
+        run: |
+          set -euo pipefail
+          cd build_assets/shared
+          "$CC" -std=c11 -Wall -Wextra -Werror -I . ../../main/shared/example/smoke.c "./$LIBRARY" -o "smoke$EXE_SUFFIX"
+          export LD_LIBRARY_PATH="$PWD:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="$PWD:${DYLD_LIBRARY_PATH:-}"
+          "./smoke$EXE_SUFFIX"
+
+      - name: Prepare artifact documentation
+        run: |
+          cp main/shared/README.md build_assets/shared/README.md
+          cp main/shared/example/smoke.c build_assets/shared/smoke.c
+          cp LICENSE build_assets/shared/LICENSE
+
+      - name: Upload library and header
+        uses: actions/upload-artifact@v7
+        with:
+          name: xray-shared-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: error
+          path: |
+            build_assets/shared/${{ matrix.library }}
+            build_assets/shared/xray.h
+            build_assets/shared/README.md
+            build_assets/shared/smoke.c
+            build_assets/shared/LICENSE
+
+  build-android:
+    name: android-${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            goarch: arm64
+            goarm: ''
+            target: aarch64-linux-android
+            machine: AArch64
+          - abi: armeabi-v7a
+            goarch: arm
+            goarm: '7'
+            target: armv7a-linux-androideabi
+            machine: ARM
+          - abi: x86
+            goarch: '386'
+            goarm: ''
+            target: i686-linux-android
+            machine: Intel 80386
+          - abi: x86_64
+            goarch: amd64
+            goarm: ''
+            target: x86_64-linux-android
+            machine: Advanced Micro Devices X86-64
+    env:
+      CGO_ENABLED: '1'
+      GOOS: android
+      GOARCH: ${{ matrix.goarch }}
+      GOARM: ${{ matrix.goarm }}
+      ANDROID_API: '24'
+      ANDROID_TARGET: ${{ matrix.target }}
+      EXPECTED_MACHINE: ${{ matrix.machine }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Cache Android NDK
+        id: ndk-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/android-ndk-r28b
+          key: xray-shared-ndk-r28b-linux-x86_64
+
+      - name: Download Android NDK
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 https://dl.google.com/android/repository/android-ndk-r28b-linux.zip -o "$RUNNER_TEMP/android-ndk.zip"
+          unzip -q -o "$RUNNER_TEMP/android-ndk.zip" -d "$RUNNER_TEMP"
+
+      - name: Select Android toolchain
+        run: |
+          set -euo pipefail
+          toolchain="$RUNNER_TEMP/android-ndk-r28b/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$toolchain/${ANDROID_TARGET}${ANDROID_API}-clang"
+          echo "CC=$toolchain/${ANDROID_TARGET}${ANDROID_API}-clang" >> "$GITHUB_ENV"
+          echo "READELF=$toolchain/llvm-readelf" >> "$GITHUB_ENV"
+          echo "NM=$toolchain/llvm-nm" >> "$GITHUB_ENV"
+
+      - name: Build Android shared library and header
+        run: |
+          set -euo pipefail
+          mkdir -p build_assets/android
+          go build -buildmode=c-shared -trimpath -buildvcs=false -ldflags="-checklinkname=0 -extldflags=-Wl,-z,max-page-size=16384" -o build_assets/android/libxray.so ./main/shared
+          mv build_assets/android/libxray.h build_assets/android/xray.h
+
+      - name: Verify Android ABI and C linkage
+        run: |
+          set -euo pipefail
+          cd build_assets/android
+          "$READELF" --file-header libxray.so > elf-header.txt
+          cat elf-header.txt
+          grep -F "Machine:" elf-header.txt | grep -F "$EXPECTED_MACHINE"
+          "$NM" --dynamic --defined-only libxray.so > exports.txt
+          for symbol in XrayStart XrayStartArgs XrayStop XrayLastError XrayFreeString; do
+            grep -E "[[:space:]]${symbol}$" exports.txt
+          done
+          "$CC" -std=c11 -Wall -Wextra -Werror -I . ../../main/shared/example/smoke.c ./libxray.so -o smoke-android
+
+      - name: Prepare Android artifact documentation
+        run: |
+          cp main/shared/README.md build_assets/android/README.md
+          cp main/shared/example/smoke.c build_assets/android/smoke.c
+          cp LICENSE build_assets/android/LICENSE
+
+      - name: Upload Android library and header
+        uses: actions/upload-artifact@v7
+        with:
+          name: xray-shared-android-${{ matrix.abi }}
+          if-no-files-found: error
+          path: |
+            build_assets/android/libxray.so
+            build_assets/android/xray.h
+            build_assets/android/README.md
+            build_assets/android/smoke.c
+            build_assets/android/LICENSE
