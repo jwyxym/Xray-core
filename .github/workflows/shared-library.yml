@@ -45,7 +45,7 @@ jobs:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
       CC: ${{ matrix.cc }}
-      LIBRARY: ${{ matrix.library }}
+      XRAY_SHARED_LIBRARY: ${{ matrix.library }}
       EXE_SUFFIX: ${{ matrix.executable-suffix }}
     defaults:
       run:
@@ -74,8 +74,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build_assets/shared
-          go build -buildmode=c-shared -trimpath -buildvcs=false -o "build_assets/shared/$LIBRARY" ./main/shared
-          header="build_assets/shared/${LIBRARY%.*}.h"
+          go build -buildmode=c-shared -trimpath -buildvcs=false -o "build_assets/shared/$XRAY_SHARED_LIBRARY" ./main/shared
+          header="build_assets/shared/${XRAY_SHARED_LIBRARY%.*}.h"
           if [ "$header" != 'build_assets/shared/xray.h' ]; then
             mv "$header" build_assets/shared/xray.h
           fi
@@ -84,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           cd build_assets/shared
-          "$CC" -std=c11 -Wall -Wextra -Werror -I . ../../main/shared/example/smoke.c "./$LIBRARY" -o "smoke$EXE_SUFFIX"
+          "$CC" -std=c11 -Wall -Wextra -Werror -I . ../../main/shared/example/smoke.c "./$XRAY_SHARED_LIBRARY" -o "smoke$EXE_SUFFIX"
           export LD_LIBRARY_PATH="$PWD:${LD_LIBRARY_PATH:-}"
           export DYLD_LIBRARY_PATH="$PWD:${DYLD_LIBRARY_PATH:-}"
           "./smoke$EXE_SUFFIX"
