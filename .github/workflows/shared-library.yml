@@ -23,6 +23,19 @@ jobs:
             goos: windows
             goarch: amd64
             cc: gcc
+            msystem: UCRT64
+            compiler-package: mingw-w64-ucrt-x86_64-gcc
+            objdump: objdump
+            shell: 'msys2 {0}'
+            library: xray.dll
+            executable-suffix: .exe
+          - runner: windows-11-arm
+            goos: windows
+            goarch: arm64
+            cc: clang
+            msystem: CLANGARM64
+            compiler-package: mingw-w64-clang-aarch64-clang mingw-w64-clang-aarch64-llvm
+            objdump: llvm-objdump
             shell: 'msys2 {0}'
             library: xray.dll
             executable-suffix: .exe
@@ -40,11 +53,19 @@ jobs:
             shell: bash
             library: libxray.dylib
             executable-suffix: ''
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            cc: gcc
+            shell: bash
+            library: libxray.so
+            executable-suffix: ''
     env:
       CGO_ENABLED: '1'
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
       CC: ${{ matrix.cc }}
+      XRAY_OBJDUMP: ${{ matrix.objdump }}
       XRAY_SHARED_LIBRARY: ${{ matrix.library }}
       EXE_SUFFIX: ${{ matrix.executable-suffix }}
     defaults:
@@ -63,9 +84,9 @@ jobs:
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64
+          msystem: ${{ matrix.msystem }}
           path-type: inherit
-          install: mingw-w64-ucrt-x86_64-gcc
+          install: ${{ matrix.compiler-package }}
 
       - name: Test shared config and lifecycle
         run: go test -timeout 5m ./main ./main/confargs ./main/shared ./infra/conf/serial
@@ -79,6 +100,9 @@ jobs:
           if [ "$header" != 'build_assets/shared/xray.h' ]; then
             mv "$header" build_assets/shared/xray.h
           fi
+
+      - name: Package and verify runtime dependencies
+        run: bash .github/scripts/package-shared-runtime.sh "$GOOS" build_assets/shared "$XRAY_SHARED_LIBRARY"
 
       - name: Compile and run C ABI smoke test
         run: |
@@ -101,11 +125,16 @@ jobs:
           name: xray-shared-${{ matrix.goos }}-${{ matrix.goarch }}
           if-no-files-found: error
           path: |
-            build_assets/shared/${{ matrix.library }}
+            build_assets/shared/*.dll
+            build_assets/shared/*.so
+            build_assets/shared/*.dylib
             build_assets/shared/xray.h
             build_assets/shared/README.md
             build_assets/shared/smoke.c
             build_assets/shared/LICENSE
+            build_assets/shared/LICENSE-*.txt
+            build_assets/shared/licenses/
+            build_assets/shared/runtime-dependencies.txt
 
   build-android:
     name: android-${{ matrix.abi }}
@@ -185,6 +214,9 @@ jobs:
           go build -buildmode=c-shared -trimpath -buildvcs=false -ldflags="-checklinkname=0 -extldflags=-Wl,-z,max-page-size=16384" -o build_assets/android/libxray.so ./main/shared
           mv build_assets/android/libxray.h build_assets/android/xray.h
 
+      - name: Verify Android runtime dependencies
+        run: bash .github/scripts/package-shared-runtime.sh android build_assets/android libxray.so
+
       - name: Verify Android ABI and C linkage
         run: |
           set -euo pipefail
@@ -215,3 +247,4 @@ jobs:
             build_assets/android/README.md
             build_assets/android/smoke.c
             build_assets/android/LICENSE
+            build_assets/android/runtime-dependencies.txt
